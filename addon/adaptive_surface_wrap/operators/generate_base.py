@@ -1,6 +1,7 @@
 """Operator to generate a volumetric base mesh around the active object."""
 
 import bpy
+import bmesh
 from mathutils import Vector
 
 
@@ -11,6 +12,10 @@ class ASW_OT_GenerateBaseMesh(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        scene = context.scene
+        density = getattr(scene, "asw_base_density", 3)
+        use_symmetry = getattr(scene, "asw_use_symmetry", True)
+
         original_obj = context.view_layer.objects.active
         if original_obj is None or original_obj.type != "MESH":
             self.report({"ERROR"}, "Select a mesh object first")
@@ -39,46 +44,78 @@ class ASW_OT_GenerateBaseMesh(bpy.types.Operator):
             self.report({"ERROR"}, "Active mesh has zero dimensions")
             return {"CANCELLED"}
 
-        bpy.ops.mesh.primitive_cube_add(location=center)
+        if use_symmetry and density % 2 == 0:
+            density += 1
 
-        new_obj = context.view_layer.objects.active
-        if new_obj:
-            # Scale to fit the bounding box.
-            new_obj.scale = (width * 0.5, depth * 0.5, height * 0.5)
+        cuts = max(density - 1, 0)
 
-            # Apply scale in Object mode.
-            bpy.ops.object.transform_apply(scale=True)
+        # Build cube via bmesh to control subdivision.
+        bm = bmesh.new()
+        half_w = width * 0.5
+        half_d = depth * 0.5
+        half_h = height * 0.5
 
-            # Subdivide the cube for better deformation.
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.select_all(action="SELECT")
-            bpy.ops.mesh.subdivide(number_cuts=4)
-            bpy.ops.object.mode_set(mode="OBJECT")
+        verts = [
+            bm.verts.new((-half_w, -half_d, -half_h)),
+            bm.verts.new((half_w, -half_d, -half_h)),
+            bm.verts.new((half_w, half_d, -half_h)),
+            bm.verts.new((-half_w, half_d, -half_h)),
+            bm.verts.new((-half_w, -half_d, half_h)),
+            bm.verts.new((half_w, -half_d, half_h)),
+            bm.verts.new((half_w, half_d, half_h)),
+            bm.verts.new((-half_w, half_d, half_h)),
+        ]
 
-            new_obj.name = "ASW_BaseMesh"
+        faces = [
+            (0, 1, 2, 3),
+            (4, 5, 6, 7),
+            (0, 1, 5, 4),
+            (1, 2, 6, 5),
+            (2, 3, 7, 6),
+            (3, 0, 4, 7),
+        ]
 
-            # Ensure selection for shading and modifier ops.
-            bpy.ops.object.select_all(action="DESELECT")
-            new_obj.select_set(True)
-            context.view_layer.objects.active = new_obj
+        for idxs in faces:
+            bm.faces.new([verts[i] for i in idxs])
 
-            # Add or reuse shrinkwrap modifier targeting the original object.
-            modifier = new_obj.modifiers.get("ASW_Shrinkwrap")
-            if modifier is None:
-                modifier = new_obj.modifiers.new(name="ASW_Shrinkwrap", type="SHRINKWRAP")
+        bm.normal_update()
 
-            if modifier.type == "SHRINKWRAP":
-                modifier.target = original_obj
-                modifier.wrap_method = "NEAREST_SURFACEPOINT"
-                modifier.offset = 0.001
+        if cuts > 0:
+            bmesh.ops.subdivide_edges(
+                bm,
+                edges=bm.edges[:],
+                cuts=cuts,
+                use_grid_fill=True,
+            )
 
-            # Smooth shading for the generated mesh.
-            bpy.ops.object.shade_smooth()
+        mesh = bpy.data.meshes.new(name="ASW_BaseMeshMesh")
+        bm.to_mesh(mesh)
+        bm.free()
 
-            # Blueprint-style viewport color and wire overlay (works in Solid with Color: Object).
-            new_obj.color = (0.2, 0.6, 1.0, 1.0)
-            new_obj.show_wire = True
-            new_obj.show_all_edges = True
+        new_obj = bpy.data.objects.new("ASW_BaseMesh", mesh)
+        new_obj.location = center
+        context.collection.objects.link(new_obj)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        new_obj.select_set(True)
+        context.view_layer.objects.active = new_obj
+
+        modifier = new_obj.modifiers.new(
+            name="ASW_Shrinkwrap",
+            type="SHRINKWRAP"
+        )
+
+        modifier.target = original_obj
+        modifier.wrap_method = "NEAREST_SURFACEPOINT"
+        modifier.offset = 0.001
+
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+
+        bpy.ops.object.shade_smooth()
+
+        new_obj.color = (0.2, 0.6, 1.0, 1.0)
+        new_obj.show_wire = True
+        new_obj.show_all_edges = True
 
         self.report(
             {"INFO"},

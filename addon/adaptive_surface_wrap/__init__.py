@@ -15,6 +15,7 @@ bl_info = {
 
 import bpy
 
+from . import props
 from .operators.generate_base import ASW_OT_GenerateBaseMesh
 from .ui.panel import ASW_PT_MainPanel
 
@@ -26,6 +27,7 @@ classes = (
 
 
 def register() -> None:
+	props.register()
 	for cls in classes:
 		bpy.utils.register_class(cls)
 
@@ -33,6 +35,7 @@ def register() -> None:
 def unregister() -> None:
 	for cls in reversed(classes):
 		bpy.utils.unregister_class(cls)
+	props.unregister()
 
 if __name__ == "__main__":
     register()
