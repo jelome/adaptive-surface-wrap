@@ -15,7 +15,6 @@ class ASW_OT_GenerateBaseMesh(bpy.types.Operator):
         scene = context.scene
         density = getattr(scene, "asw_base_density", 3)
         use_symmetry = getattr(scene, "asw_use_symmetry", True)
-        shape = getattr(scene, "asw_base_shape", "CUBE")
 
         original_obj = context.view_layer.objects.active
         if original_obj is None or original_obj.type != "MESH":
@@ -45,69 +44,46 @@ class ASW_OT_GenerateBaseMesh(bpy.types.Operator):
         if use_symmetry and density % 2 == 0:
             density += 1
 
-        cuts = max(density - 1, 0)
+        cuts = max(density, 0)
+
+        mean_dim = (width + depth + height) / 3.0
+        if mean_dim == 0:
+            factor = 0.0
+        else:
+            deviation = (
+                abs(width - mean_dim)
+                + abs(depth - mean_dim)
+                + abs(height - mean_dim)
+            ) / 3.0
+            normalized_deviation = deviation / mean_dim
+            normalized_deviation = max(0.0, min(1.0, normalized_deviation))
+            factor = 1.0 - normalized_deviation
 
         bm = bmesh.new()
 
-        if shape == "SPHERE":
-            bmesh.ops.create_uvsphere(
-                bm,
-                u_segments=max(density * 4, 8),
-                v_segments=max(density * 2, 4),
-                radius=0.5,
-            )
-            bmesh.ops.scale(bm, vec=(width, depth, height), verts=bm.verts)
-        elif shape == "CYLINDER":
-            # Quad-only capsule: subdivided cube projected to a sphere and scaled to bounds.
-            bmesh.ops.create_cube(bm, size=1.0)
+        # Always start from a cube, then adapt.
+        bmesh.ops.create_cube(bm, size=1.0)
+        if cuts > 0:
             bmesh.ops.subdivide_edges(
                 bm,
                 edges=bm.edges,
-                cuts=density,
+                cuts=cuts,
                 use_grid_fill=True,
             )
+
+        if factor > 0.0:
+            center_vec = Vector((0.0, 0.0, 0.0))
+            radius = 0.5
             for vert in bm.verts:
-                vert.co = vert.co.normalized() * 0.5
-                vert.co.x *= width
-                vert.co.y *= depth
-                vert.co.z *= height
-        else:  # CUBE
-            half_w = width * 0.5
-            half_d = depth * 0.5
-            half_h = height * 0.5
+                direction = vert.co - center_vec
+                if direction.length > 1e-6:
+                    spherical = direction.normalized() * radius
+                    vert.co = vert.co.lerp(spherical, factor)
 
-            verts = [
-                bm.verts.new((-half_w, -half_d, -half_h)),
-                bm.verts.new((half_w, -half_d, -half_h)),
-                bm.verts.new((half_w, half_d, -half_h)),
-                bm.verts.new((-half_w, half_d, -half_h)),
-                bm.verts.new((-half_w, -half_d, half_h)),
-                bm.verts.new((half_w, -half_d, half_h)),
-                bm.verts.new((half_w, half_d, half_h)),
-                bm.verts.new((-half_w, half_d, half_h)),
-            ]
-
-            faces = [
-                (0, 1, 2, 3),
-                (4, 5, 6, 7),
-                (0, 1, 5, 4),
-                (1, 2, 6, 5),
-                (2, 3, 7, 6),
-                (3, 0, 4, 7),
-            ]
-
-            for idxs in faces:
-                bm.faces.new([verts[i] for i in idxs])
-
-            bm.normal_update()
-
-            if cuts > 0:
-                bmesh.ops.subdivide_edges(
-                    bm,
-                    edges=bm.edges[:],
-                    cuts=cuts,
-                    use_grid_fill=True,
-                )
+        for vert in bm.verts:
+            vert.co.x *= width
+            vert.co.y *= depth
+            vert.co.z *= height
 
         bm.normal_update()
 
@@ -153,5 +129,10 @@ class ASW_OT_GenerateBaseMesh(bpy.types.Operator):
                 for space in area.spaces:
                     if space.type == "VIEW_3D":
                         space.shading.color_type = "OBJECT"
+
+        if factor < 0.05:
+            self.report({"INFO"}, "Using box base (no spherical adaptation)")
+        else:
+            self.report({"INFO"}, f"Using adaptive spherical base (factor={factor:.2f})")
 
         return {"FINISHED"}
