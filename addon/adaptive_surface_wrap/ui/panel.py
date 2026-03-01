@@ -13,6 +13,7 @@ class ASW_PT_MainPanel(bpy.types.Panel):
 	def draw(self, context):
 		layout = self.layout
 		scene = context.scene
+		layout.prop(scene, "asw_base_shape")
 		layout.prop(scene, "asw_use_symmetry")
 		layout.prop(scene, "asw_base_density")
 		if scene.asw_use_symmetry and scene.asw_base_density % 2 == 0:
